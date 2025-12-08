@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField } from 'discord.js';
+  import { Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField } from 'discord.js';
 import { Groq } from 'groq-sdk';
 import express from 'express';
 import {
@@ -613,7 +613,6 @@ client.on('interactionCreate', async interaction => {
     
     await interaction.reply({ 
       embeds: [embed],
-      ephemeral: true
     });
     
   } else if (interaction.commandName === 'voice') {
