@@ -504,8 +504,14 @@ client.on('ready', async () => {
           name: 'text',
           description: 'Text for Rias to speak (max 280 characters)',
           type: 3, // STRING
-          required: true,
+          required: false, // MAKE TEXT OPTIONAL
         },
+        {
+          name: 'reply',
+          description: 'Set to true to use the text from the message you replied to.',
+          type: 5, // BOOLEAN
+          required: false,
+        }
       ],
     },
     {
@@ -611,42 +617,74 @@ client.on('interactionCreate', async interaction => {
     });
     
   } else if (interaction.commandName === 'voice') {
-    await interaction.deferReply({ ephemeral: true });
-    
-    const textToSpeak = interaction.options.getString('text');
-    
-    // Check text length
-    if (textToSpeak.length > 280) {
-      await interaction.editReply("Please keep the text under 280 characters for voice messages.");
-      return;
-    }
-    
-    // Check daily voice usage limit
-    if (interaction.user.id !== SPECIAL_USER_ID) {
-      const today = new Date().toISOString().split('T')[0];
-      const lastUsed = userLastVoiceUsage.get(interaction.user.id);
-      
-      if (lastUsed === today) {
-        await interaction.editReply("You can only use the voice command once per day. Try again tomorrow.");
-        return;
+      await interaction.deferReply({ ephemeral: true });
+  
+      // 1. 🛑 FIX: Check if the user is in a Voice Channel and in a Guild
+      if (!interaction.guild || !interaction.member || !interaction.member.voice.channel) {
+          await interaction.editReply("❌ To use the voice command, you must be in a voice channel within a server.");
+          return;
       }
-    }
-    
-    // Generate and play voice
-    try {
-      await generateAndPlayVoice(interaction, textToSpeak);
-      
-      // Update usage tracking
+  
+      // 2. 🛑 FIX: Check daily voice usage limit (Moved here for better performance)
       if (interaction.user.id !== SPECIAL_USER_ID) {
-        const today = new Date().toISOString().split('T')[0];
-        userLastVoiceUsage.set(interaction.user.id, today);
+          const today = new Date().toISOString().split('T')[0];
+          const lastUsed = userLastVoiceUsage.get(interaction.user.id);
+  
+          if (lastUsed === today) {
+              await interaction.editReply("You can only use the voice command once per day. Try again tomorrow.");
+              return;
+          }
       }
       
-      await interaction.editReply(`🎙️ Voice message played successfully in your voice channel!`);
-    } catch (error) {
-      console.error('Voice command error:', error);
-      await interaction.editReply(`❌ Error: ${error.message || 'Failed to generate/play voice message.'}`);
-    }
+      // --- Existing Reply/Text Logic (You did this correctly) ---
+      let textToSpeak = interaction.options.getString('text');
+      const useReply = interaction.options.getBoolean('reply') || false;
+  
+      if (useReply && interaction.reference?.messageId) {
+          try {
+              const repliedMessage = await interaction.channel.messages.fetch(interaction.reference.messageId);
+              // Use the description of the embed if it's the bot's message (which holds the AI text)
+              if (repliedMessage.author.id === client.user.id) {
+                  // We prioritize the embed description (AI response) or fall back to plain content
+                  const contentToClean = repliedMessage.embeds[0]?.description || repliedMessage.content;
+                  // Remove the emotion tag and cleanup
+                  textToSpeak = cleanText(contentToClean);
+              } else {
+                  await interaction.editReply("❌ Error: You must reply to one of my messages to use the 'reply' option.");
+                  return;
+              }
+          } catch (e) {
+              console.error('Failed to fetch replied message:', e);
+              await interaction.editReply("❌ Error fetching the message you replied to.");
+              return;
+          }
+      } else if (!textToSpeak) {
+          // If neither text nor reply was provided
+          await interaction.editReply("Please provide text using the `text` option, or reply to one of my messages and set `reply` to true.");
+          return;
+      }
+      
+      // Check text length
+      if (textToSpeak.length > 280) {
+          await interaction.editReply("Please keep the text under 280 characters for voice messages.");
+          return;
+      }
+  
+      // Generate and play voice
+      try {
+          await generateAndPlayVoice(interaction, textToSpeak);
+  
+          // Update usage tracking (Only if voice generation was successful)
+          if (interaction.user.id !== SPECIAL_USER_ID) {
+              const today = new Date().toISOString().split('T')[0];
+              userLastVoiceUsage.set(interaction.user.id, today);
+          }
+  
+          await interaction.editReply(`🎙️ Voice message played successfully in your voice channel!`);
+      } catch (error) {
+          console.error('Voice command error:', error);
+          await interaction.editReply(`❌ Error: ${error.message || 'Failed to generate/play voice message.'}`);
+      }
   }
 });
 
