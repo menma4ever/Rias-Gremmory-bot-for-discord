@@ -10,7 +10,7 @@ import {
   VoiceConnectionStatus,
   NoSubscriberBehavior,
 } from '@discordjs/voice';
-import { ElevenLabsClient } from 'elevenlabs';
+import { ElevenLabs } from 'elevenlabs';
 import { Readable } from 'stream';
 import { setTimeout } from 'timers/promises';
 import { randomInt } from 'crypto';
@@ -59,7 +59,7 @@ const VOICE_DAILY_LIMIT = 1;
 // ----------------------------
 const app = express();
 const groqClient = new Groq({ apiKey: GROQ_API_KEY });
-const elevenLabsClient = new ElevenLabsClient({ apiKey: ELEVENLABS_API_KEY });
+const elevenLabsClient = new ElevenLabs({ apiKey: ELEVENLABS_API_KEY });
 
 const client = new Client({
   intents: [
@@ -288,16 +288,15 @@ async function generateAndPlayVoice(interaction, textToSpeak) {
     ]);
     
     // Generate voice with ElevenLabs
-    const audioStream = await elevenLabsClient.textToSpeech.convert(ELEVENLABS_VOICE_ID, {
+    const audioStream = await elevenLabsClient.textToSpeech.convertAsStream(ELEVENLABS_VOICE_ID, {
       text: textToSpeak,
+      model_id: "eleven_multilingual_v2",
       voice_settings: {
         stability: 0.75,
         similarity_boost: 0.85,
-      },
-      model_id: "eleven_multilingual_v2",
-      output_format: "mp3_44100_128"
+      }
     });
-    
+        
     // Create audio player and resource
     player = createAudioPlayer({
       behaviors: {
