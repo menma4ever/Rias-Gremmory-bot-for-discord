@@ -23,15 +23,31 @@ dotenv.config();
 // ----------------------------
 // API Tokens & Constants
 // ----------------------------
-const BOT_API_TOKEN = process.env.DISCORD_BOT_TOKEN || 'MTQ0NzQ1ODU5MDA4NzU3NzYwMA.Grb3GZ.iMJDifHZmK1cSIomFkMqMYRSckMtamhkOEoAGs';
-const GROQ_API_KEY = process.env.GROQ_API_KEY || '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';
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || 'sk_f0d43765c291042e839ae6abb8cdf8e743488ea2f1d798c9';
+// These must be set as environment variables in Render.com
+const BOT_API_TOKEN = process.env.DISCORD_BOT_TOKEN;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+
+// Validate required environment variables
+if (!BOT_API_TOKEN) {
+  console.error('❌ Missing required environment variable: DISCORD_BOT_TOKEN');
+  process.exit(1);
+}
+if (!GROQ_API_KEY) {
+  console.error('❌ Missing required environment variable: GROQ_API_KEY');
+  process.exit(1);
+}
+if (!ELEVENLABS_API_KEY) {
+  console.error('❌ Missing required environment variable: ELEVENLABS_API_KEY');
+  process.exit(1);
+}
+
 const ELEVENLABS_VOICE_ID = 'cgSgspJ2msm6clMCkdW9';
 
 // Discord IDs - REPLACE WITH YOUR ACTUAL IDs
-const SPECIAL_USER_ID = '1013151135122591754'; // e.g., '123456789012345678'
-const GUILD_ID = '1447411522539098124'; // e.g., '987654321098765432'
-const TARGET_CHANNEL_ID = '1447411524162424864'; // Channel for scheduled posts
+const SPECIAL_USER_ID = '1013151135122591754';
+const GUILD_ID = '1447411522539098124';
+const TARGET_CHANNEL_ID = '1447411524162424864';
 
 const MAX_MESSAGES = 5;
 const MAX_CHARACTER_LIMIT = 5000;
@@ -291,7 +307,7 @@ async function generateAndPlayVoice(interaction, textToSpeak) {
     
     // Create resource from audio stream
     const audioResource = createAudioResource(Readable.from(audioStream), {
-      inputType: 'webm/opus', // ElevenLabs streams in webm/opus format
+      inputType: 'webm/opus',
       inlineVolume: true,
     });
     
