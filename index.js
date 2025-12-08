@@ -10,7 +10,7 @@ import {
   VoiceConnectionStatus,
   NoSubscriberBehavior,
 } from '@discordjs/voice';
-import { ElevenLabs } from 'elevenlabs';
+import { ElevenLabsClient } from 'elevenlabs';
 import { Readable } from 'stream';
 import { setTimeout } from 'timers/promises';
 import { randomInt } from 'crypto';
@@ -59,7 +59,7 @@ const VOICE_DAILY_LIMIT = 1;
 // ----------------------------
 const app = express();
 const groqClient = new Groq({ apiKey: GROQ_API_KEY });
-const elevenLabsClient = new ElevenLabs({ apiKey: ELEVENLABS_API_KEY });
+const elevenLabsClient = new ElevenLabsClient({ apiKey: ELEVENLABS_API_KEY });
 
 const client = new Client({
   intents: [
