@@ -1,12 +1,13 @@
-import { 
-    Client, 
-    GatewayIntentBits, 
-    Partials, 
-    EmbedBuilder, 
-    ActionRowBuilder, 
-    ButtonBuilder, 
-    ButtonStyle, 
-    ApplicationCommandType 
+import {
+    Client,
+    GatewayIntentBits,
+    Partials,
+    EmbedBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    ApplicationCommandType,
+    ApplicationCommandOptionType // 🛑 NEW: To define slash command arguments
 } from 'discord.js';
 import { Groq } from 'groq-sdk';
 import express from 'express';
@@ -15,13 +16,13 @@ import { setTimeout } from 'timers/promises';
 import { randomInt } from 'crypto';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
-import fs from 'fs/promises'; // 🛑 CRITICAL IMPORT FOR FILE SENDING
+import fs from 'fs/promises';
 
 // Load environment variables
 dotenv.config();
 
 // ----------------------------
-// API Tokens & Constants
+// API Tokens & Constants (UNCHANGED)
 // ----------------------------
 const BOT_API_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
@@ -46,7 +47,7 @@ const MESSAGE_COOLDOWN = 10; // seconds
 const VOICE_DAILY_LIMIT = 1;
 
 // ----------------------------
-// Initialize Clients
+// Initialize Clients (UNCHANGED)
 // ----------------------------
 const app = express();
 const groqClient = new Groq({ apiKey: GROQ_API_KEY });
@@ -63,14 +64,14 @@ const client = new Client({
 });
 
 // ----------------------------
-// Data Structures
+// Data Structures (UNCHANGED)
 // ----------------------------
 const chatMemory = new Map(); // userId -> message history
 const userLastRequest = new Map(); // userId -> timestamp
 const userLastVoiceUsage = new Map(); // userId -> date string
 
 // ----------------------------
-// Media URLs (DIRECT LINKS)
+// Media URLs (UNCHANGED)
 // ----------------------------
 const GIF_URLS_WITH_CAPTIONS = [
     ['https://i.imgur.com/QvXVd8Y.gif', ''],
@@ -83,7 +84,7 @@ const GIF_URLS_WITH_CAPTIONS = [
 const GIF_INTRO_URL = 'https://i.imgur.com/fRiasIntro.gif'; 
 
 // ----------------------------
-// Emotion URLs
+// Emotion URLs (UNCHANGED)
 // ----------------------------
 const EMOTION_URLS = {
     "smirk": "https://i.ibb.co/Fkgs2V7n/image.png",
@@ -125,7 +126,7 @@ const EMOTION_URLS = {
 };
 
 // ----------------------------
-// Helper Functions
+// Helper Functions (UNCHANGED)
 // ----------------------------
 function truncateMessage(message, maxLength = 200) {
     if (!message.content) return message;
@@ -204,9 +205,9 @@ function parseEmotionAndSend(message, text) {
 }
 
 // ----------------------------
-// Voice Message Handler (New File-Based Logic)
+// Voice Message Handler (File-Based Logic - UNCHANGED)
 // ----------------------------
-async function generateAndSendVoiceFile(interaction, textToSpeak) {
+async function generateAndSendVoiceFile(interaction, textToSpeak, replyTargetMessageId) {
     // Check text length limit
     if (textToSpeak.length > 280) {
         throw new Error('Voice message text must be under 280 characters.');
@@ -230,7 +231,7 @@ async function generateAndSendVoiceFile(interaction, textToSpeak) {
         await interaction.channel.send({
             content: `🎙️ **${interaction.user.tag}** requested Rias Gremory voice:`,
             files: [tempFileName],
-            reply: { messageReference: interaction.targetMessage.id } 
+            reply: { messageReference: replyTargetMessageId } 
         });
         
     } catch (e) {
@@ -242,7 +243,7 @@ async function generateAndSendVoiceFile(interaction, textToSpeak) {
 }
 
 // ----------------------------
-// Scheduler Function
+// Scheduler Function (UNCHANGED)
 // ----------------------------
 async function sendRandomGif() {
     console.log("Starting scheduler...");
@@ -279,7 +280,7 @@ async function sendRandomGif() {
 }
 
 // ----------------------------
-// AI Response Handler
+// AI Response Handler (UNCHANGED)
 // ----------------------------
 async function processMessageForAi(message) {
     const userId = message.author.id;
@@ -323,7 +324,7 @@ async function processMessageForAi(message) {
 }
 
 // ----------------------------
-// Event Listeners
+// Event Listeners (UPDATED COMMANDS ARRAY)
 // ----------------------------
 client.on('ready', async () => {
     console.log(`🤖 Logged in as ${client.user.tag}!`);
@@ -332,7 +333,19 @@ client.on('ready', async () => {
     const commands = [
         {
             name: 'voice',
-            type: ApplicationCommandType.Message, // Context Menu Command (Right Click)
+            type: ApplicationCommandType.Message, // Kept the Context Menu Command
+        },
+        {
+            name: 'voice',
+            description: 'Generate Rias Gremory voice from her message (or your text)',
+            options: [
+                {
+                    name: 'text',
+                    description: 'The text for Rias to speak (max 280 characters). Overrides replied message.',
+                    type: ApplicationCommandOptionType.String,
+                    required: false,
+                }
+            ]
         },
         {
             name: 'startrias',
@@ -346,6 +359,7 @@ client.on('ready', async () => {
     
     try {
         console.log('Registering slash commands...');
+        // Note: Registering a slash command and a context menu command with the same name is allowed.
         await client.application.commands.set(commands);
         console.log('Successfully registered slash commands.');
     } catch (error) {
@@ -376,11 +390,16 @@ client.on('messageCreate', async message => {
     }
 });
 
+// ----------------------------
+// interactionCreate (UPDATED FOR /voice SLASH COMMAND)
+// ----------------------------
 client.on('interactionCreate', async interaction => {
     // --- Context Menu Command (Voice) ---
     if (interaction.isMessageContextMenuCommand() && interaction.commandName === 'voice') {
+        // Defer reply ephemerally for the context menu interaction
         await interaction.deferReply({ ephemeral: true });
 
+        // Logic is mostly the same as before for the Context Menu (right-click)
         const isMember = await checkGroupMembership(interaction.user, interaction.channel);
         if (!isMember) {
             await interaction.editReply("Please join the required server to use my commands.");
@@ -411,7 +430,10 @@ client.on('interactionCreate', async interaction => {
         }
 
         try {
-            await generateAndSendVoiceFile(interaction, textToSpeak);
+            // Pass the target message ID for the reply reference
+            await generateAndSendVoiceFile(interaction, textToSpeak, messageToSpeak.id);
+            
+            // Mark usage upon success
             if (interaction.user.id !== SPECIAL_USER_ID) {
                 const today = new Date().toISOString().split('T')[0];
                 userLastVoiceUsage.set(interaction.user.id, today);
@@ -424,9 +446,78 @@ client.on('interactionCreate', async interaction => {
         return;
     }
 
-    // --- Slash Commands ---
+    // --- Slash Commands (/voice, /startrias, /memory) ---
     if (!interaction.isCommand()) return;
 
+    // --- /voice Slash Command ---
+    if (interaction.commandName === 'voice') {
+        // Defer reply non-ephemerally for the slash command to show "Rias is thinking"
+        await interaction.deferReply({ ephemeral: false }); 
+        
+        const isMember = await checkGroupMembership(interaction.user, interaction.channel);
+        if (!isMember) {
+            await interaction.editReply({ content: "Please join the required server to use my commands." });
+            return;
+        }
+
+        let textToSpeak = interaction.options.getString('text');
+        let replyTargetMessageId = interaction.id; // Default reply is to the slash command itself
+
+        if (!textToSpeak) {
+            // Check for a replied-to message if no 'text' argument was provided
+            const repliedMessage = interaction.reference?.messageId 
+                ? await interaction.channel.messages.fetch(interaction.reference.messageId).catch(() => null)
+                : null;
+            
+            if (!repliedMessage || repliedMessage.author.id !== client.user.id) {
+                await interaction.editReply("❌ Please provide text or reply to one of my messages to generate voice.");
+                return;
+            }
+
+            // Get text from the replied message
+            const contentToClean = repliedMessage.embeds[0]?.description || repliedMessage.content;
+            textToSpeak = cleanText(contentToClean);
+            replyTargetMessageId = repliedMessage.id;
+        }
+
+        if (!textToSpeak) {
+            await interaction.editReply("❌ Could not find text content to speak.");
+            return;
+        }
+
+        if (textToSpeak.length > 280) {
+            await interaction.editReply("❌ Text is too long. Please keep it under 280 characters.");
+            return;
+        }
+
+        // Daily limit check
+        if (interaction.user.id !== SPECIAL_USER_ID) {
+            const today = new Date().toISOString().split('T')[0];
+            const lastUsed = userLastVoiceUsage.get(interaction.user.id);
+            if (lastUsed === today) {
+                await interaction.editReply("You can only use the voice command once per day.");
+                return;
+            }
+        }
+        
+        try {
+            // Generate and send file, replying to the *target* message
+            await generateAndSendVoiceFile(interaction, textToSpeak, replyTargetMessageId);
+            
+            // Mark usage upon success
+            if (interaction.user.id !== SPECIAL_USER_ID) {
+                const today = new Date().toISOString().split('T')[0];
+                userLastVoiceUsage.set(interaction.user.id, today);
+            }
+            await interaction.deleteReply(); // Clean up the "Rias is thinking" reply
+        } catch (error) {
+            console.error('Slash Voice error:', error);
+            await interaction.editReply(`❌ Error: ${error.message || 'Failed to generate voice message.'}`);
+        }
+        return;
+    }
+
+    // --- /startrias & /memory Slash Commands (UNCHANGED) ---
     if (interaction.commandName === 'startrias' || interaction.commandName === 'memory') {
         chatMemory.delete(interaction.user.id);
         const embed = new EmbedBuilder()
@@ -441,7 +532,7 @@ client.on('interactionCreate', async interaction => {
 });
 
 // ----------------------------
-// Keep-Alive
+// Keep-Alive (UNCHANGED)
 // ----------------------------
 const PORT = process.env.PORT || 3000;
 app.get('/', (req, res) => res.send('Rias Gremory Bot is alive!'));
