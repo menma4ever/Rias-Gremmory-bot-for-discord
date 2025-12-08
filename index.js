@@ -7,16 +7,16 @@ import {
     ButtonBuilder,
     ButtonStyle,
     ApplicationCommandType,
-    ApplicationCommandOptionType // 🛑 NEW: To define slash command arguments
+    ApplicationCommandOptionType 
 } from 'discord.js';
 import { Groq } from 'groq-sdk';
 import express from 'express';
-import { ElevenLabsClient } from 'elevenlabs';
+// import { ElevenLabsClient } from 'elevenlabs'; // 🛑 REMOVED DUE TO SDK ERROR
 import { setTimeout } from 'timers/promises';
 import { randomInt } from 'crypto';
-import fetch from 'node-fetch';
+import fetch from 'node-fetch'; // Required for direct API calls
 import dotenv from 'dotenv';
-import fs from 'fs/promises';
+import fs from 'fs/promises'; // Use promises version for async/await
 
 // Load environment variables
 dotenv.config();
@@ -34,7 +34,7 @@ if (!BOT_API_TOKEN || !GROQ_API_KEY || !ELEVENLABS_API_KEY) {
     process.exit(1);
 }
 
-const ELEVENLABS_VOICE_ID = 'cgSgspJ2msm6clMCkdW9';
+const ELEVENLABS_VOICE_ID = 'cgSgspJ2msm6clMCkdW9'; // Rias Gremory Voice ID
 
 // Discord IDs - REPLACE WITH YOUR ACTUAL IDs
 const SPECIAL_USER_ID = '1013151135122591754';
@@ -47,12 +47,11 @@ const MESSAGE_COOLDOWN = 10; // seconds
 const VOICE_DAILY_LIMIT = 1;
 
 // ----------------------------
-// Initialize Clients (UNCHANGED)
+// Initialize Clients (UPDATED: elevenLabsClient removed)
 // ----------------------------
 const app = express();
 const groqClient = new Groq({ apiKey: GROQ_API_KEY });
-const elevenLabsClient = new ElevenLabsClient({ apiKey: ELEVENLABS_API_KEY });
-
+// const elevenLabsClient = new ElevenLabsClient({ apiKey: ELEVENLABS_API_KEY }); // 🛑 Removed
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -205,7 +204,7 @@ function parseEmotionAndSend(message, text) {
 }
 
 // ----------------------------
-// Voice Message Handler (File-Based Logic - UNCHANGED)
+// Voice Message Handler (FIXED File-Based Logic using Direct Fetch)
 // ----------------------------
 async function generateAndSendVoiceFile(interaction, textToSpeak, replyTargetMessageId) {
     // Check text length limit
@@ -213,19 +212,37 @@ async function generateAndSendVoiceFile(interaction, textToSpeak, replyTargetMes
         throw new Error('Voice message text must be under 280 characters.');
     }
 
-    // 1. Generate voice with ElevenLabs
-    const audioData = await elevenLabsClient.textToSpeech.convert({
-        voice_id: ELEVENLABS_VOICE_ID,
-        text: textToSpeak,
-        model_id: "eleven_multilingual_v2",
-        voice_settings: { stability: 0.75, similarity_boost: 0.85 },
+    // 1. Generate voice with ElevenLabs using direct fetch
+    const ELEVENLABS_URL = `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`;
+    
+    const response = await fetch(ELEVENLABS_URL, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'xi-api-key': ELEVENLABS_API_KEY,
+        },
+        body: JSON.stringify({
+            text: textToSpeak,
+            model_id: "eleven_multilingual_v2",
+            voice_settings: { stability: 0.75, similarity_boost: 0.85 },
+        }),
     });
 
+    if (!response.ok) {
+        // If the API returns a non-200 status, try to read the error message
+        const errorText = await response.text().catch(() => 'No response body');
+        throw new Error(`ElevenLabs API failed. Status: ${response.status}. Response: ${errorText.substring(0, 100)}...`);
+    }
+
+    // Get the audio data as a Buffer
+    const audioData = await response.buffer();
+    
     // 2. Define filename and write audio data
     const tempFileName = `rias_voice_${interaction.id}.mp3`;
     
     try {
-        await fs.writeFile(tempFileName, Buffer.from(audioData));
+        // Use fs.writeFile from 'fs/promises'
+        await fs.writeFile(tempFileName, audioData); 
 
         // 3. Send the file via message reply
         await interaction.channel.send({
@@ -333,7 +350,7 @@ client.on('ready', async () => {
     const commands = [
         {
             name: 'voice',
-            type: ApplicationCommandType.Message, // Kept the Context Menu Command
+            type: ApplicationCommandType.Message, // Context Menu Command (Right-click -> Apps -> Voice)
         },
         {
             name: 'voice',
@@ -359,7 +376,6 @@ client.on('ready', async () => {
     
     try {
         console.log('Registering slash commands...');
-        // Note: Registering a slash command and a context menu command with the same name is allowed.
         await client.application.commands.set(commands);
         console.log('Successfully registered slash commands.');
     } catch (error) {
@@ -375,7 +391,7 @@ client.on('messageCreate', async message => {
     const isDirectMessage = message.channel.type === 1; 
     const isMentioned = message.mentions.users.has(client.user.id);
     const isReplyToBot = message.reference && message.reference.messageId && 
-                         (await message.channel.messages.fetch(message.reference.messageId)).author.id === client.user.id;
+                             (await message.channel.messages.fetch(message.reference.messageId)).author.id === client.user.id;
     
     if (!isDirectMessage && !isMentioned && !isReplyToBot) return;
     if (!isUserAllowed(message.author.id)) return;
