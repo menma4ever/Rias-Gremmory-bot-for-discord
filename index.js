@@ -1,279 +1,651 @@
-import { Client, GatewayIntentBits, Partials } from 'discord.js';
+import { Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField } from 'discord.js';
 import { Groq } from 'groq-sdk';
 import express from 'express';
-import { createRequire } from 'module';
-import { fileURLToPath } from 'url';
-import path from 'path';
+import {
+  joinVoiceChannel,
+  createAudioPlayer,
+  createAudioResource,
+  AudioPlayerStatus,
+  entersState,
+  VoiceConnectionStatus,
+  NoSubscriberBehavior,
+} from '@discordjs/voice';
+import { ElevenLabsClient } from 'elevenlabs';
+import { Readable } from 'stream';
+import { setTimeout } from 'timers/promises';
+import { randomInt } from 'crypto';
+import fetch from 'node-fetch';
+import dotenv from 'dotenv';
 
-// Note: For ElevenLabs and audio conversion, we'll address those functions 
-// in a subsequent step as they require external dependencies (like FFmpeg).
-// We'll focus on text/media first.
-
-// --- FILE PATH & REQUIRE SETUP ---
-const require = createRequire(import.meta.url);
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-// You will need the 'node-fetch' package to replace the 'requests' module.
-const fetch = require('node-fetch'); 
+// Load environment variables
+dotenv.config();
 
 // ----------------------------
-// API Tokens & Constants (Using process.env for security)
+// API Tokens & Constants
 // ----------------------------
-const BOT_API_TOKEN = process.env.DISCORD_BOT_TOKEN; 
-const NEW_API_KEY = process.env.GROQ_API_KEY; 
-const GROUP_CHAT_ID = '-1002262322366'; // Telegram Group ID (Note: Discord uses Guild/Channel IDs)
-const SPECIAL_USER = '1013151135122591754'; // Discord username check requires fetching/caching
+const BOT_API_TOKEN = process.env.DISCORD_BOT_TOKEN || 'MTQ0NzQ1ODU5MDA4NzU3NzYwMA.Grb3GZ.iMJDifHZmK1cSIomFkMqMYRSckMtamhkOEoAGs';
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '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';
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || 'sk_f0d43765c291042e839ae6abb8cdf8e743488ea2f1d798c9';
+const ELEVENLABS_VOICE_ID = 'cgSgspJ2msm6clMCkdW9';
 
-// --- DISCORD SPECIFIC IDs ---
-// Replace with your actual Discord Guild (Server) ID and a Channel ID for cross-checking
-const GUILD_ID = '1447411522539098124'; 
-const TARGET_CHANNEL_ID = '1447411524162424864'; 
+// Discord IDs - REPLACE WITH YOUR ACTUAL IDs
+const SPECIAL_USER_ID = '1013151135122591754'; // e.g., '123456789012345678'
+const GUILD_ID = '1447411522539098124'; // e.g., '987654321098765432'
+const TARGET_CHANNEL_ID = '1447411524162424864'; // Channel for scheduled posts
 
 const MAX_MESSAGES = 5;
 const MAX_CHARACTER_LIMIT = 5000;
+const MESSAGE_COOLDOWN = 10; // seconds
+const VOICE_DAILY_LIMIT = 1;
 
 // ----------------------------
 // Initialize Clients
 // ----------------------------
 const app = express();
-const groqClient = new Groq({ apiKey: NEW_API_KEY });
+const groqClient = new Groq({ apiKey: GROQ_API_KEY });
+const elevenLabsClient = new ElevenLabsClient({ apiKey: ELEVENLABS_API_KEY });
 
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.DirectMessages, // For private chat support
-    ],
-    partials: [Partials.Channel, Partials.Message], // Necessary for DMs/caching
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildVoiceStates,
+  ],
+  partials: [Partials.Channel, Partials.Message, Partials.User],
 });
 
 // ----------------------------
-// Data Structures (Memory, Rate Limiting)
+// Data Structures
 // ----------------------------
-// Maps are the JavaScript equivalent of Python's defaultdict
-const chatMemory = new Map(); // Key: user_id, Value: Array of messages (fixed size queue)
-const userLastRequest = new Map(); // For rate limiting
+const chatMemory = new Map(); // userId -> message history
+const userLastRequest = new Map(); // userId -> timestamp
+const userLastVoiceUsage = new Map(); // userId -> date string
 
 // ----------------------------
-// Emotion URLs (Direct Image URLs for Discord Embeds)
+// Media URLs (DIRECT LINKS)
+// ----------------------------
+// These are direct media URLs that Discord can embed
+const GIF_URLS_WITH_CAPTIONS = [
+  ['https://i.imgur.com/QvXVd8Y.gif', ''],
+  ['https://i.imgur.com/l5M0XeB.gif', ''],
+  ['https://i.imgur.com/JkFj7qP.gif', 'Hmm. This changes things...'],
+  ['https://i.imgur.com/9HwQhXr.gif', ''],
+  ['https://i.imgur.com/5QcFZ4K.gif', 'Don\'t get ideas…']
+];
+
+const GIF_INTRO_URL = 'https://i.imgur.com/fRiasIntro.gif'; // Replace with actual intro GIF URL
+
+const rias_responses = [
+  "As the President of the Occult Research Club, I must say, you're quite intriguing.",
+  "I value loyalty above all else. Will you stand by my side?",
+  "Even in the most dangerous situations, I stay composed and ready to fight.",
+  "There's more to me than just my looks. I'm a powerful demon, after all.",
+  "Shall we continue this adventure together?"
+];
+
+// ----------------------------
+// Emotion URLs (DIRECT IMAGE LINKS)
 // ----------------------------
 const EMOTION_URLS = {
-    // ... (All your image URLs go here, e.g., "https://i.ibb.co/Fkgs2V7n/image.png")
-    "smirk": "https://i.ibb.co/Fkgs2V7n/image.png",
-    "laugh": "https://i.ibb.co/hkW24gc/image.png",
-    // Add all remaining emotion URLs here...
+  "smirk": "https://i.ibb.co/Fkgs2V7n/image.png",
+  "laugh": "https://i.ibb.co/hkW24gc/image.png",
+  "wink": "https://i.ibb.co/WWF5MNXn/image.png",
+  "hug": "https://i.ibb.co/7tQjxvZ4/image.png",
+  "confident_smirk": "https://i.ibb.co/1f8tFDJm/image.png",
+  "sly_glance": "https://i.ibb.co/4gPdPzVS/image.png",
+  "teasing_whisper": "https://i.ibb.co/JwZNG9rC/image.png",
+  "gift_pause": "https://i.ibb.co/BHbzG7Zp/image.png",
+  "quiet_pride": "https://i.ibb.co/ZzTxLfJx/image.png",
+  "fond_exasperation": "https://i.ibb.co/ccsKsYYL/image.png",
+  "playful_tease": "https://i.ibb.co/dsyrFWKL/image.png",
+  "romantic_gaze": "https://i.ibb.co/Rkr8fvGb/image.png",
+  "mysterious_smile": "https://i.ibb.co/HfTdK4vm/image.png",
+  "peerage_leader_mode": "https://i.ibb.co/xKnGRwQc/image.png",
+  "silent_agreement": "https://i.ibb.co/YFVn3JRZ/image.png",
+  "gentle_nudge": "https://i.ibb.co/21K5khB4/image.png",
+  "thinking": "https://i.ibb.co/sd5z9q7p/image.png",
+  "curious": "https://i.ibb.co/rR7SCS6G/image.png",
+  "surprised": "https://i.ibb.co/h1dq4smy/image.png",
+  "listening_attentive": "https://i.ibb.co/nMx11sJV/image.png",
+  "calm_assurance": "https://i.ibb.co/0px82gnQ/image.png",
+  "joyful_laugh": "https://i.ibb.co/S4GdjrLM/image.png",
+  "reflective_quiet": "https://i.ibb.co/Ng1rfvxh/image.png",
+  "supportive_comfort": "https://i.ibb.co/KTPWYRR/image.png",
+  "mischievous_smirk": "https://i.ibb.co/SXFzNdcb/image.png",
+  "blushing": "https://i.ibb.co/c5WjsRD/image.png",
+  "annoyed": "https://i.ibb.co/xK8Tt0qF/image.png",
+  "confused": "https://i.ibb.co/Q7qYbQPj/image.png",
+  "happy": "https://i.ibb.co/20XB23cC/image.png",
+  "shocked": "https://i.ibb.co/B18hF7P/image.png",
+  "skeptical": "https://i.ibb.co/QFXCKWf4/image.png",
+  "nervous": "https://i.ibb.co/XxkQPWXT/image.png",
+  "pleased": "https://i.ibb.co/3mKSmHkV/image.png",
+  "calm": "https://i.ibb.co/S4c4Cs0t/image.png",
+  "disappointed": "https://i.ibb.co/XZP3FqJK/image.png",
+  "configcfg": "https://i.ibb.co/dw0qTqXy/image.png"
 };
 
 // ----------------------------
 // Helper Functions
 // ----------------------------
-
-/**
- * Truncates message content for character limit management.
- */
-function truncateMessage(message, max_length = 200) {
-    if (message.content.length > max_length) {
-        message.content = message.content.substring(0, max_length) + "...";
-    }
-    return message;
+function truncateMessage(message, maxLength = 200) {
+  if (!message.content) return message;
+  
+  if (message.content.length > maxLength) {
+    return {
+      ...message,
+      content: message.content.substring(0, maxLength) + "..."
+    };
+  }
+  return message;
 }
 
-/**
- * Checks if the user is a member of the required Discord Guild (Server).
- * This is the equivalent of Telegram's check_group_membership.
- */
+function cleanText(text) {
+  return text.replace(/\*.*?\*/g, "").trim();
+}
+
 async function checkGroupMembership(user, channel) {
-    // Skip check for the special user
-    if (user.username === SPECIAL_USER.substring(1)) {
-        return true;
+  if (user.id === SPECIAL_USER_ID) {
+    return true;
+  }
+
+  try {
+    const guild = await client.guilds.fetch(GUILD_ID);
+    if (!guild) {
+      console.error(`Guild with ID ${GUILD_ID} not found.`);
+      await channel.send("I couldn't verify your membership. Please try again later.");
+      return false;
     }
 
-    try {
-        const guild = await client.guilds.fetch(GUILD_ID);
-        if (!guild) {
-            console.error(`Guild with ID ${GUILD_ID} not found.`);
-            return false;
-        }
+    const member = await guild.members.fetch(user.id).catch(() => null);
 
-        const member = await guild.members.fetch(user.id).catch(() => null);
+    if (member) {
+      return true;
+    } else {
+      const inviteUrl = 'https://discord.gg/bxSnZQBsdf'; // Replace with your actual invite
 
-        if (member) {
-            return true;
-        } else {
-            // Note: Discord allows direct invite URLs.
-            const inviteUrl = 'https://discord.gg/bxSnZQBsdf'; 
-            
-            const joinButton = {
-                type: 1, // ActionRow
-                components: [
-                    {
-                        type: 2, // Button
-                        style: 5, // Link
-                        label: `✅ Join @squad13girls`,
-                        url: inviteUrl,
-                    },
-                ],
-            };
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setLabel('✅ Join @squad13girls')
+          .setURL(inviteUrl)
+          .setStyle(ButtonStyle.Link)
+      );
 
-            await channel.send({ 
-                content: `To use me, join **@squad13girls** first!`,
-                components: [joinButton]
-            });
-            return false;
-        }
-    } catch (e) {
-        console.error(`Discord Guild check failed: ${e.message}`);
-        await channel.send("I couldn't verify your membership. Please try again later.");
-        return false;
+      await channel.send({
+        content: "To use me, join **@squad13girls** first!",
+        components: [row]
+      });
+      return false;
     }
+  } catch (e) {
+    console.error(`Discord Guild check failed: ${e.message}`);
+    await channel.send("I couldn't verify your membership. Please try again later.");
+    return false;
+  }
 }
 
-/**
- * Parses AI output for {{emotion}}, sends the media, and posts the caption.
- */
+function isUserAllowed(userId) {
+  if (userId === SPECIAL_USER_ID) return true;
+  
+  const now = Date.now();
+  const last = userLastRequest.get(userId) || 0;
+  
+  if (now - last < MESSAGE_COOLDOWN * 1000) {
+    return false;
+  }
+  
+  userLastRequest.set(userId, now);
+  return true;
+}
+
 function parseEmotionAndSend(message, text) {
-    const emotionPattern = /\{\{(\w+)\}\}/;
-    const match = text.match(emotionPattern);
-    
-    let mediaUrlToSend = null;
-    let captionToSend = text; 
+  const emotionPattern = /\{\{(\w+)\}\}/;
+  const match = text.match(emotionPattern);
 
-    if (match) {
-        const emotion = match[1].toLowerCase();
-        
-        if (EMOTION_URLS[emotion]) {
-            mediaUrlToSend = EMOTION_URLS[emotion];
-            // Remove the emotion tag for the caption
-            captionToSend = text.replace(emotionPattern, "").trim();
-        }
-    }
+  let mediaUrlToSend = null;
+  let textToSend = text;
 
-    try {
-        if (mediaUrlToSend) {
-            // Discord handles images and GIFs cleanly via files/embeds.
-            // Sending the URL in the 'files' array is often the simplest way.
-            // We use 'content' for the caption and 'files' for the image URL.
-            message.reply({ 
-                content: captionToSend, 
-                files: [{ attachment: mediaUrlToSend }] 
-            });
-        } else {
-            // Send plain text fallback
-            message.reply({ content: captionToSend });
-        }
-    } catch (e) {
-        console.error(`Failed to send media/caption: ${e.message}`);
-        message.reply(`Error processing message: ${captionToSend}`);
+  if (match) {
+    const emotion = match[1].toLowerCase();
+    if (EMOTION_URLS[emotion]) {
+      mediaUrlToSend = EMOTION_URLS[emotion];
+      textToSend = text.replace(emotionPattern, "").trim();
     }
+  }
+
+  try {
+    if (mediaUrlToSend) {
+      const embed = new EmbedBuilder()
+        .setImage(mediaUrlToSend)
+        .setDescription(textToSend)
+        .setColor(0xCD0000)
+        .setFooter({ text: "Rias Gremory" });
+
+      return message.reply({ embeds: [embed] });
+    } else {
+      return message.reply({ content: textToSend });
+    }
+  } catch (e) {
+    console.error(`Failed to send media/caption: ${e.message}`);
+    return message.reply({ content: `Error processing message: ${textToSend.substring(0, 100)}...` });
+  }
 }
 
+// ----------------------------
+// Voice Message Handler
+// ----------------------------
+async function generateAndPlayVoice(interaction, textToSpeak) {
+  const member = interaction.member;
+  const voiceChannel = member?.voice?.channel;
+  
+  if (!voiceChannel) {
+    throw new Error('You must be in a voice channel to use this command!');
+  }
+  
+  // Check user permissions to connect to the voice channel
+  const permissions = voiceChannel.permissionsFor(interaction.guild.members.me);
+  if (!permissions.has(PermissionsBitField.Flags.Connect) || 
+      !permissions.has(PermissionsBitField.Flags.Speak)) {
+    throw new Error('I don\'t have permission to connect or speak in your voice channel!');
+  }
+  
+  let connection;
+  let player;
+  
+  try {
+    // Connect to voice channel
+    connection = joinVoiceChannel({
+      channelId: voiceChannel.id,
+      guildId: voiceChannel.guild.id,
+      adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+      selfDeaf: false,
+    });
+    
+    // Wait for connection to be ready
+    await Promise.race([
+      entersState(connection, VoiceConnectionStatus.Ready, 15_000),
+      new Promise((_, reject) => 
+        setTimeout(15_000).then(() => reject(new Error('Failed to connect to voice channel within 15 seconds')))
+      )
+    ]);
+    
+    // Generate voice with ElevenLabs
+    const audioStream = await elevenLabsClient.textToSpeech.convert(ELEVENLABS_VOICE_ID, {
+      text: textToSpeak,
+      voice_settings: {
+        stability: 0.75,
+        similarity_boost: 0.85,
+      },
+      model_id: "eleven_multilingual_v2",
+      output_format: "mp3_44100_128"
+    });
+    
+    // Create audio player and resource
+    player = createAudioPlayer({
+      behaviors: {
+        noSubscriber: NoSubscriberBehavior.Play,
+      }
+    });
+    
+    // Create resource from audio stream
+    const audioResource = createAudioResource(Readable.from(audioStream), {
+      inputType: 'webm/opus', // ElevenLabs streams in webm/opus format
+      inlineVolume: true,
+    });
+    
+    // Connect player to the voice connection
+    connection.subscribe(player);
+    player.play(audioResource);
+    
+    // Wait for playback to finish or timeout after 30 seconds
+    await Promise.race([
+      entersState(player, AudioPlayerStatus.Idle, 30_000),
+      new Promise((_, reject) => 
+        setTimeout(30_000).then(() => {
+          player.stop();
+          reject(new Error('Audio playback timed out after 30 seconds'));
+        })
+      )
+    ]);
+    
+    return true;
+  } catch (error) {
+    console.error('Voice generation/playback error:', error);
+    throw error;
+  } finally {
+    // Clean up connection and player
+    if (player) {
+      player.stop();
+    }
+    if (connection) {
+      connection.destroy();
+    }
+  }
+}
 
 // ----------------------------
-// Groq AI Handler
+// Scheduler Function
 // ----------------------------
+async function sendRandomGif() {
+  console.log("Starting scheduler...");
 
+  while (true) {
+    try {
+      // Random delay between 30-90 minutes
+      const delayMinutes = randomInt(30, 91);
+      console.log(`Scheduler will wait ${delayMinutes} minutes before next post.`);
+      await setTimeout(delayMinutes * 60 * 1000);
+      
+      // Only run if client is ready
+      if (!client.readyAt) {
+        console.log("Client not ready yet, skipping scheduled post.");
+        continue;
+      }
+      
+      const targetChannel = await client.channels.fetch(TARGET_CHANNEL_ID).catch(e => {
+        console.error(`Could not fetch target channel: ${e.message}`);
+        return null;
+      });
+      
+      if (!targetChannel || !targetChannel.isTextBased()) {
+        console.error(`Target channel ${TARGET_CHANNEL_ID} not found or not a text channel.`);
+        continue;
+      }
+      
+      // Get last message to avoid consecutive bot messages
+      const lastMessages = await targetChannel.messages.fetch({ limit: 1 });
+      const lastMessage = lastMessages.first();
+      
+      if (lastMessage && lastMessage.author.id === client.user.id) {
+        console.log("Last message was from bot, skipping scheduled post.");
+        continue;
+      }
+      
+      // Select random GIF with caption
+      const [mediaUrl, caption] = GIF_URLS_WITH_CAPTIONS[Math.floor(Math.random() * GIF_URLS_WITH_CAPTIONS.length)];
+      
+      const embed = new EmbedBuilder()
+        .setImage(mediaUrl)
+        .setDescription(caption || '')
+        .setColor(0xCD0000)
+        .setFooter({ text: "Scheduled by Rias Gremory" });
+      
+      await targetChannel.send({ embeds: [embed] });
+      console.log(`Sent scheduled media: ${mediaUrl}`);
+      
+    } catch (e) {
+      console.error(`Error in scheduler: ${e.message}`);
+      // Wait a bit before retrying after an error
+      await setTimeout(60_000);
+    }
+  }
+}
+
+// ----------------------------
+// AI Response Handler
+// ----------------------------
 async function processMessageForAi(message) {
-    const userId = message.author.id;
-    const userUsername = message.author.username;
+  const userId = message.author.id;
+  const userText = message.content;
+  
+  console.log(`Processing message from ${message.author.tag}: ${userText}`);
+  
+  // Initialize user memory if needed
+  if (!chatMemory.has(userId)) {
+    chatMemory.set(userId, []);
+  }
+  
+  const userHistory = chatMemory.get(userId);
+  
+  // Add user message to history
+  userHistory.push({ role: "user", content: userText });
+  
+  // Prepare messages to send to Groq
+  const historyToSend = [...userHistory]
+    .slice(-MAX_MESSAGES)
+    .map(msg => truncateMessage({ ...msg }));
+  
+  const systemPromptContent = (
+    "You are Rias Gremory, a noble and powerful demon from High School DxD. " +
+    "You are knowledgeable, confident, and protective of those you care about. " +
+    "**Always** include an appropriate emotion tag like {{hug}}, {{thinking}}, {{laugh}}, {{surprised}}, etc., " +
+    "**at the beginning or end of your response** if it expresses any distinct feeling, reaction, or action. " +
+    "Examples of available emotions include: {{smirk}}, {{laugh}}, {{wink}}, {{hug}}, " +
+    "{{confident_smirk}}, {{sly_glance}}, {{teasing_whisper}}, {{gift_pause}}, " +
+    "{{quiet_pride}}, {{fond_exasperation}}, {{playful_tease}}, {{romantic_gaze}}, " +
+    "{{mysterious_smile}}, {{peerage_leader_mode}}, {{silent_agreement}}, {{gentle_nudge}}, " +
+    "{{thinking}}, {{curious}}, {{surprised}}, {{listening_attentive}}, {{calm_assurance}}, " +
+    "{{joyful_laugh}}, {{reflective_quiet}}, {{supportive_comfort}}, {{mischievous_smirk}}, " +
+    "{{blushing}}, {{annoyed}}, {{confused}}, {{happy}}, {{shocked}}, {{skeptical}}, " +
+    "{{nervous}}, {{pleased}}, {{calm}}, {{disappointed}}, {{configcfg}}. " +
+    "Choose the tag that best matches the tone. Keep responses short and elegant. " +
+    "Do not repeat the same emotion consecutively unless context strongly dictates it."
+  );
+  
+  const messagesToSend = [
+    { role: "system", content: systemPromptContent },
+    ...historyToSend
+  ];
+  
+  // Trim history if over character limit
+  let totalCharacters = messagesToSend.reduce((sum, msg) => sum + msg.content.length, 0);
+  let trimmedCount = 0;
+  
+  while (totalCharacters > MAX_CHARACTER_LIMIT && messagesToSend.length > 1) {
+    // Remove the oldest history item (index 1, as index 0 is the system prompt)
+    messagesToSend.splice(1, 1);
+    totalCharacters = messagesToSend.reduce((sum, msg) => sum + msg.content.length, 0);
+    trimmedCount++;
+  }
+  
+  if (trimmedCount > 0) {
+    console.log(`Trimmed ${trimmedCount} messages from history for user ${userId}. New total chars: ${totalCharacters}`);
+  }
+  
+  // Call Groq API
+  try {
+    const response = await groqClient.chat.completions.create({
+      messages: messagesToSend,
+      model: "llama-3.3-70b-versatile",
+    });
     
-    // 1. Memory Management (Fixed size queue)
-    if (!chatMemory.has(userId)) {
-        chatMemory.set(userId, []);
-    }
-    const userHistory = chatMemory.get(userId);
-
-    // Add user message
-    userHistory.push({ role: "user", content: message.content });
-    if (userHistory.length > MAX_MESSAGES) {
-        userHistory.shift(); // Remove the oldest entry
-    }
-
-    // 2. Prepare history and system prompt
-    const historyToSend = userHistory.map(msg => truncateMessage({ ...msg })); // Truncate and copy
-
-    const systemPromptContent = (
-        "You are Rias Gremory, a noble and powerful demon from High School DxD. "
-        // ... (Include your full system prompt here) ...
-    );
+    const replyText = response.choices[0].message.content;
+    console.log(`AI response for ${userId}: ${replyText}`);
     
-    const messagesToSend = [
-        { role: "system", content: systemPromptContent },
-        ...historyToSend
-    ];
-
-    // 3. Groq API Call
-    try {
-        const response = await groqClient.chat.completions.create({
-            messages: messagesToSend,
-            model: "llama-3.3-70b-versatile", // Ensure this model name is correct
-        });
-        
-        const replyText = response.choices[0].message.content;
-
-        // 4. Append AI response to memory
-        userHistory.push({ role: "assistant", content: replyText });
-        if (userHistory.length > MAX_MESSAGES) {
-            userHistory.shift();
-        }
-        
-        // 5. Send the response
-        parseEmotionAndSend(message, replyText);
-
-    } catch (e) {
-        console.error(`Groq API Error for user ${userId}: ${e.message}`);
-        message.reply("Sorry, I couldn't process your request at the moment.");
+    // Add AI response to memory
+    userHistory.push({ role: "assistant", content: replyText });
+    
+    // Keep memory within limits
+    if (userHistory.length > MAX_MESSAGES * 2) {
+      userHistory.splice(0, userHistory.length - MAX_MESSAGES * 2);
     }
+    
+    // Send the response
+    await parseEmotionAndSend(message, replyText);
+    
+  } catch (e) {
+    console.error(`Groq API Error for user ${userId}: ${e.message}`);
+    await message.reply({
+      content: "Sorry, I couldn't process your request at the moment. Please try again later."
+    });
+  }
 }
 
-
 // ----------------------------
-// Message Listener
+// Event Listeners
 // ----------------------------
-client.on('messageCreate', async message => {
-    // Ignore commands and bots
-    if (message.author.bot || message.content.startsWith('/')) {
-        return;
+client.on('ready', async () => {
+  console.log(`🤖 Logged in as ${client.user.tag}!`);
+  
+  // Register slash commands
+  const commands = [
+    {
+      name: 'voice',
+      description: 'Generate Rias Gremory voice from your text',
+      options: [
+        {
+          name: 'text',
+          description: 'Text for Rias to speak (max 280 characters)',
+          type: 3, // STRING
+          required: true,
+        },
+      ],
+    },
+    {
+      name: 'startrias',
+      description: 'Start a new conversation with Rias Gremory',
+    },
+    {
+      name: 'memory',
+      description: 'Clear your conversation memory with Rias',
     }
-
-    const isDirectMessage = message.channel.type === 1; // DM channel type
-    
-    // Check if the message mentions the bot or is a direct message
-    const isMentioned = message.mentions.users.has(client.user.id);
-
-    // Determine if we should process the message
-    let shouldProcess = isDirectMessage || isMentioned;
-
-    // Optional: Group check for the general channel
-    if (!shouldProcess && message.guild && message.channel.id === TARGET_CHANNEL_ID) {
-        // You can add logic here if you want the bot to talk in a specific channel 
-        // without a mention/reply, but for privacy/control, mention/DM is safer.
-        // For now, let's stick to DM or Mention/Reply.
-    }
-    
-    if (shouldProcess) {
-        // 1. Group/Membership Check
-        const isMember = await checkGroupMembership(message.author, message.channel);
-        if (!isMember) {
-            return; // Exit if not a member and not special user
-        }
-
-        // 2. Process for AI
-        await processMessageForAi(message);
-    }
+  ];
+  
+  try {
+    console.log('Registering slash commands...');
+    await client.application.commands.set(commands);
+    console.log('Successfully registered slash commands.');
+  } catch (error) {
+    console.error('Error registering commands:', error);
+  }
+  
+  // Start the scheduler
+  sendRandomGif().catch(console.error);
 });
 
+client.on('messageCreate', async message => {
+  // Ignore bots and messages starting with slash (commands)
+  if (message.author.bot || message.content.startsWith('/')) {
+    return;
+  }
+  
+  // Determine if we should process this message:
+  // 1. Direct messages
+  // 2. Messages where the bot is mentioned
+  // 3. Replies to the bot
+  const isDirectMessage = message.channel.type === 1; // DM channel type
+  const isMentioned = message.mentions.users.has(client.user.id);
+  const isReplyToBot = message.reference && 
+                      message.reference.messageId && 
+                      (await message.channel.messages.fetch(message.reference.messageId))
+                        .author.id === client.user.id;
+  
+  const shouldProcess = isDirectMessage || isMentioned || isReplyToBot;
+  
+  if (!shouldProcess) {
+    return;
+  }
+  
+  // Check user rate limiting
+  if (!isUserAllowed(message.author.id)) {
+    if (message.channel.type !== 1) { // Only respond in DMs if rate limited
+      await message.reply({
+        content: "Please wait a few seconds before sending another message.",
+        ephemeral: true
+      });
+    }
+    return;
+  }
+  
+  // Check group membership for non-special users
+  const isMember = await checkGroupMembership(message.author, message.channel);
+  if (!isMember) {
+    return;
+  }
+  
+  // Process the message with AI
+  try {
+    await processMessageForAi(message);
+  } catch (e) {
+    console.error(`Error processing message: ${e.message}`);
+    await message.reply({
+      content: "I encountered an error while processing your message. Please try again later."
+    });
+  }
+});
+
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isCommand()) return;
+  
+  // Check group membership first
+  const isMember = await checkGroupMembership(interaction.user, interaction.channel);
+  if (!isMember) {
+    await interaction.reply({ 
+      content: "Please join the required server to use my commands.", 
+      ephemeral: true 
+    });
+    return;
+  }
+  
+  if (interaction.commandName === 'startrias' || interaction.commandName === 'memory') {
+    // Clear user memory
+    chatMemory.delete(interaction.user.id);
+    
+    // Send intro with media
+    const embed = new EmbedBuilder()
+      .setImage(GIF_INTRO_URL)
+      .setDescription("Welcome, beloved. I am Rias Gremory, the Crimson-Haired Ruin Princess. How may I serve you today?")
+      .setColor(0xCD0000)
+      .setFooter({ text: "President of the Occult Research Club" });
+    
+    await interaction.reply({ 
+      embeds: [embed],
+      ephemeral: true
+    });
+    
+  } else if (interaction.commandName === 'voice') {
+    await interaction.deferReply({ ephemeral: true });
+    
+    const textToSpeak = interaction.options.getString('text');
+    
+    // Check text length
+    if (textToSpeak.length > 280) {
+      await interaction.editReply("Please keep the text under 280 characters for voice messages.");
+      return;
+    }
+    
+    // Check daily voice usage limit
+    if (interaction.user.id !== SPECIAL_USER_ID) {
+      const today = new Date().toISOString().split('T')[0];
+      const lastUsed = userLastVoiceUsage.get(interaction.user.id);
+      
+      if (lastUsed === today) {
+        await interaction.editReply("You can only use the voice command once per day. Try again tomorrow.");
+        return;
+      }
+    }
+    
+    // Generate and play voice
+    try {
+      await generateAndPlayVoice(interaction, textToSpeak);
+      
+      // Update usage tracking
+      if (interaction.user.id !== SPECIAL_USER_ID) {
+        const today = new Date().toISOString().split('T')[0];
+        userLastVoiceUsage.set(interaction.user.id, today);
+      }
+      
+      await interaction.editReply(`🎙️ Voice message played successfully in your voice channel!`);
+    } catch (error) {
+      console.error('Voice command error:', error);
+      await interaction.editReply(`❌ Error: ${error.message || 'Failed to generate/play voice message.'}`);
+    }
+  }
+});
 
 // ----------------------------
-// Keep-alive & Login
+// Keep-Alive & Start Bot
 // ----------------------------
 const PORT = process.env.PORT || 3000;
-app.get('/', (req, res) => res.send('Bot is awake and running!'));
-app.listen(PORT, () => console.log(`Keep-Alive server running on port ${PORT}`));
-
-client.on('ready', () => {
-    console.log(`🤖 Logged in as ${client.user.tag}!`);
-    // Optional: Set bot presence here
+app.get('/', (req, res) => {
+  res.send(`Rias Gremory Bot is alive! Uptime: ${process.uptime()} seconds`);
 });
 
-client.login(BOT_API_TOKEN);
+app.listen(PORT, () => {
+  console.log(`Keep-alive server running on port ${PORT}`);
+});
+
+// Login to Discord
+client.login(BOT_API_TOKEN).catch(console.error);
