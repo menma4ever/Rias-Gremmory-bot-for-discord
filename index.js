@@ -17,6 +17,22 @@ import fetch from 'node-fetch'; // Required for direct API calls
 import dotenv from 'dotenv';
 import fs from 'fs/promises'; // Use promises version for async/await
 
+// ----------------------------
+// GLOBAL ERROR HANDLERS (Added for stability and debugging)
+// ----------------------------
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('--- Unhandled Rejection (Async Crash) ---');
+    console.error(reason, promise);
+    // In production, you might want to restart the process here, but logging is vital first.
+});
+
+process.on('uncaughtException', (err) => {
+    console.error('--- Uncaught Exception (Sync Crash) ---');
+    console.error(err);
+    // Exit so Render can cleanly restart the service
+    process.exit(1); 
+});
+
 // Load environment variables
 dotenv.config();
 
@@ -376,8 +392,6 @@ client.on('messageCreate', async message => {
     if (!isDirectMessage && !isMentioned && !isReplyToBot) return;
     if (!isUserAllowed(message.author.id)) return;
     
-    // 🛑 REMOVED: await checkGroupMembership(message.author, message.channel);
-    
     try {
         await processMessageForAi(message);
     } catch (e) {
@@ -386,7 +400,7 @@ client.on('messageCreate', async message => {
 });
 
 // ----------------------------
-// interactionCreate (CLEANED UP AFTER REMOVING MEMBERSHIP CHECK)
+// interactionCreate
 // ----------------------------
 client.on('interactionCreate', async interaction => {
     // WRAP ALL COMMAND LOGIC IN A TRY...CATCH BLOCK
@@ -395,8 +409,6 @@ client.on('interactionCreate', async interaction => {
         if (interaction.isMessageContextMenuCommand() && interaction.commandName === 'voice') {
             // DEFER IMMEDIATELY
             await interaction.deferReply({ ephemeral: true });
-
-            // 🛑 REMOVED: checkGroupMembership check here
 
             const messageToSpeak = interaction.targetMessage;
             if (messageToSpeak.author.id !== client.user.id) {
@@ -447,8 +459,6 @@ client.on('interactionCreate', async interaction => {
             // DEFER IMMEDIATELY
             await interaction.deferReply({ ephemeral: false }); 
             
-            // 🛑 REMOVED: checkGroupMembership check here
-
             let textToSpeak = interaction.options.getString('text');
             let replyTargetMessageId = interaction.id;
 
