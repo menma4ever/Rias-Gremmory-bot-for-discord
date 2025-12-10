@@ -11,7 +11,6 @@ import {
 } from 'discord.js';
 import { Groq } from 'groq-sdk';
 import express from 'express';
-// import { ElevenLabsClient } from 'elevenlabs'; // 🛑 REMOVED DUE TO SDK ERROR
 import { setTimeout } from 'timers/promises';
 import { randomInt } from 'crypto';
 import fetch from 'node-fetch'; // Required for direct API calls
@@ -124,7 +123,7 @@ const EMOTION_URLS = {
 };
 
 // ----------------------------
-// Helper Functions
+// Helper Functions (checkGroupMembership REMOVED)
 // ----------------------------
 function truncateMessage(message, maxLength = 200) {
     if (!message.content) return message;
@@ -137,31 +136,6 @@ function truncateMessage(message, maxLength = 200) {
 function cleanText(text) {
     // Remove all text inside {{...}} and trim any leading/trailing whitespace
     return text.replace(/\{\{.*?\}\}/g, "").trim();
-}
-
-async function checkGroupMembership(user, channel) {
-    if (user.id === SPECIAL_USER_ID) return true;
-
-    try {
-        const guild = await client.guilds.fetch(GUILD_ID);
-        if (!guild) return false;
-        const member = await guild.members.fetch(user.id).catch(() => null);
-
-        if (member) {
-            return true;
-        } else {
-            const inviteUrl = 'https://discord.gg/bxSnZQBsdf';
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setLabel('✅ Join @squad13girls').setURL(inviteUrl).setStyle(ButtonStyle.Link)
-            );
-            // Use channel.send for general messages, even if triggered by an interaction
-            await channel.send({ content: "To use me, join **@squad13girls** first!", components: [row] });
-            return false;
-        }
-    } catch (e) {
-        console.error(`Discord Guild check failed: ${e.message}`);
-        return false;
-    }
 }
 
 function isUserAllowed(userId) {
@@ -205,7 +179,7 @@ async function parseEmotionAndSend(message, text) {
 }
 
 // ----------------------------
-// Voice Message Handler (FIXED File-Based Logic using Direct Fetch)
+// Voice Message Handler
 // ----------------------------
 async function generateAndSendVoiceFile(interaction, textToSpeak, replyTargetMessageId) {
     // Check text length limit
@@ -402,8 +376,7 @@ client.on('messageCreate', async message => {
     if (!isDirectMessage && !isMentioned && !isReplyToBot) return;
     if (!isUserAllowed(message.author.id)) return;
     
-    const isMember = await checkGroupMembership(message.author, message.channel);
-    if (!isMember) return;
+    // 🛑 REMOVED: await checkGroupMembership(message.author, message.channel);
     
     try {
         await processMessageForAi(message);
@@ -413,28 +386,17 @@ client.on('messageCreate', async message => {
 });
 
 // ----------------------------
-// interactionCreate (FIXED DOUBLE-ACKNOWLEDGEMENT AND ADDED GLOBAL CATCH)
+// interactionCreate (CLEANED UP AFTER REMOVING MEMBERSHIP CHECK)
 // ----------------------------
 client.on('interactionCreate', async interaction => {
-    // ----------------------------------------------------
     // WRAP ALL COMMAND LOGIC IN A TRY...CATCH BLOCK
-    // TO PREVENT BOT CRASHES (The main fix for not receiving answers)
-    // ----------------------------------------------------
     try {
         // --- Context Menu Command (Voice) ---
         if (interaction.isMessageContextMenuCommand() && interaction.commandName === 'voice') {
-            // Defer reply ephemerally for the context menu interaction
+            // DEFER IMMEDIATELY
             await interaction.deferReply({ ephemeral: true });
 
-            const isMember = await checkGroupMembership(interaction.user, interaction.channel);
-            if (!isMember) {
-                // If checkGroupMembership sends an invite, just return;
-                // Otherwise, send a basic failure message if deferred
-                if (interaction.deferred || interaction.replied) {
-                    await interaction.editReply("Please join the required server to use my commands.");
-                }
-                return;
-            }
+            // 🛑 REMOVED: checkGroupMembership check here
 
             const messageToSpeak = interaction.targetMessage;
             if (messageToSpeak.author.id !== client.user.id) {
@@ -460,17 +422,13 @@ client.on('interactionCreate', async interaction => {
             }
 
             try {
-                // Pass the target message ID for the reply reference
                 await generateAndSendVoiceFile(interaction, textToSpeak, messageToSpeak.id);
                 
-                // Mark usage upon success
                 if (interaction.user.id !== SPECIAL_USER_ID) {
                     const today = new Date().toISOString().split('T')[0];
                     userLastVoiceUsage.set(interaction.user.id, today);
                 }
                 
-                // 🛑 FIX: Use followUp() or deleteReply() + followUp(). 
-                // Using deleteReply() followed by followUp() is the safest pattern for ephemeral deferrals
                 await interaction.deleteReply(); 
                 await interaction.followUp({ content: `✅ Voice file sent! Check the channel reply.`, ephemeral: true });
 
@@ -486,20 +444,15 @@ client.on('interactionCreate', async interaction => {
 
         // --- /voice Slash Command ---
         if (interaction.commandName === 'voice') {
-            // Defer reply non-ephemerally for the slash command to show "Rias is thinking"
+            // DEFER IMMEDIATELY
             await interaction.deferReply({ ephemeral: false }); 
             
-            const isMember = await checkGroupMembership(interaction.user, interaction.channel);
-            if (!isMember) {
-                await interaction.editReply({ content: "Please join the required server to use my commands." });
-                return;
-            }
+            // 🛑 REMOVED: checkGroupMembership check here
 
             let textToSpeak = interaction.options.getString('text');
-            let replyTargetMessageId = interaction.id; // Default reply is to the slash command itself
+            let replyTargetMessageId = interaction.id;
 
             if (!textToSpeak) {
-                // Check for a replied-to message if no 'text' argument was provided
                 const repliedMessage = interaction.reference?.messageId 
                     ? await interaction.channel.messages.fetch(interaction.reference.messageId).catch(() => null)
                     : null;
@@ -509,7 +462,6 @@ client.on('interactionCreate', async interaction => {
                     return;
                 }
 
-                // Get text from the replied message
                 const contentToClean = repliedMessage.embeds[0]?.description || repliedMessage.content;
                 textToSpeak = cleanText(contentToClean);
                 replyTargetMessageId = repliedMessage.id;
@@ -536,15 +488,13 @@ client.on('interactionCreate', async interaction => {
             }
             
             try {
-                // Generate and send file, replying to the *target* message
                 await generateAndSendVoiceFile(interaction, textToSpeak, replyTargetMessageId);
                 
-                // Mark usage upon success
                 if (interaction.user.id !== SPECIAL_USER_ID) {
                     const today = new Date().toISOString().split('T')[0];
                     userLastVoiceUsage.set(interaction.user.id, today);
                 }
-                await interaction.deleteReply(); // Clean up the "Rias is thinking" reply
+                await interaction.deleteReply(); // Clean up the public "Rias is thinking" reply
             } catch (error) {
                 console.error('Slash Voice error:', error);
                 await interaction.editReply(`❌ Error: ${error.message || 'Failed to generate voice message.'}`);
@@ -564,20 +514,24 @@ client.on('interactionCreate', async interaction => {
             await interaction.reply({ embeds: [embed] });
         }
     } catch (error) {
-        // Global catch block for any unhandled errors in interaction processing
+        // Global catch block to prevent full bot crash
         console.error('An unhandled interaction error occurred:', error);
         
-        // Attempt to send a private error message if the interaction hasn't timed out or been acknowledged yet.
-        // This prevents the fatal crash (40060 error itself).
+        // This logic ensures we respond to the interaction exactly once
         if (interaction.replied || interaction.deferred) {
             try {
-                // Use followUp if already acknowledged
-                await interaction.followUp({ content: '❌ An internal error occurred. I failed, but I did not crash. Please try again.', ephemeral: true });
+                // If deferred, edit the deferred message
+                await interaction.editReply({ content: '❌ An internal error occurred after deferral. Please try again.', ephemeral: true });
             } catch (followUpError) {
-                console.error('Failed to send follow-up error message:', followUpError);
+                // Fallback to followUp if the interaction is still open but editReply failed
+                try {
+                    await interaction.followUp({ content: '❌ An internal error occurred. Please try again.', ephemeral: true });
+                } catch (e) {
+                    console.error('Failed to send final error message:', e);
+                }
             }
         } else {
-            // Use standard reply if not acknowledged yet
+            // If not acknowledged at all, send a direct reply
             try {
                 await interaction.reply({ content: '❌ An unexpected error occurred. Please try again.', ephemeral: true });
             } catch (replyError) {
