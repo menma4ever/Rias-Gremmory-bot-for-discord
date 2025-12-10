@@ -11,33 +11,18 @@ import {
 } from 'discord.js';
 import { Groq } from 'groq-sdk';
 import express from 'express';
+// import { ElevenLabsClient } from 'elevenlabs'; // 🛑 REMOVED DUE TO SDK ERROR
 import { setTimeout } from 'timers/promises';
 import { randomInt } from 'crypto';
 import fetch from 'node-fetch'; // Required for direct API calls
 import dotenv from 'dotenv';
 import fs from 'fs/promises'; // Use promises version for async/await
 
-// ----------------------------
-// GLOBAL ERROR HANDLERS (Added for stability and debugging)
-// ----------------------------
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('--- Unhandled Rejection (Async Crash) ---');
-    console.error(reason, promise);
-    // In production, you might want to restart the process here, but logging is vital first.
-});
-
-process.on('uncaughtException', (err) => {
-    console.error('--- Uncaught Exception (Sync Crash) ---');
-    console.error(err);
-    // Exit so Render can cleanly restart the service
-    process.exit(1); 
-});
-
 // Load environment variables
 dotenv.config();
 
 // ----------------------------
-// API Tokens & Constants
+// API Tokens & Constants (UNCHANGED)
 // ----------------------------
 const BOT_API_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
@@ -62,10 +47,11 @@ const MESSAGE_COOLDOWN = 10; // seconds
 const VOICE_DAILY_LIMIT = 1;
 
 // ----------------------------
-// Initialize Clients
+// Initialize Clients (UPDATED: elevenLabsClient removed)
 // ----------------------------
 const app = express();
 const groqClient = new Groq({ apiKey: GROQ_API_KEY });
+// const elevenLabsClient = new ElevenLabsClient({ apiKey: ELEVENLABS_API_KEY }); // 🛑 Removed
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -77,14 +63,14 @@ const client = new Client({
 });
 
 // ----------------------------
-// Data Structures
+// Data Structures (UNCHANGED)
 // ----------------------------
 const chatMemory = new Map(); // userId -> message history
 const userLastRequest = new Map(); // userId -> timestamp
 const userLastVoiceUsage = new Map(); // userId -> date string
 
 // ----------------------------
-// Media URLs
+// Media URLs (UNCHANGED)
 // ----------------------------
 const GIF_URLS_WITH_CAPTIONS = [
     ['https://i.imgur.com/QvXVd8Y.gif', ''],
@@ -97,7 +83,7 @@ const GIF_URLS_WITH_CAPTIONS = [
 const GIF_INTRO_URL = 'https://i.imgur.com/fRiasIntro.gif'; 
 
 // ----------------------------
-// Emotion URLs
+// Emotion URLs (UNCHANGED)
 // ----------------------------
 const EMOTION_URLS = {
     "smirk": "https://i.ibb.co/Fkgs2V7n/image.png",
@@ -139,7 +125,7 @@ const EMOTION_URLS = {
 };
 
 // ----------------------------
-// Helper Functions (checkGroupMembership REMOVED)
+// Helper Functions (UNCHANGED)
 // ----------------------------
 function truncateMessage(message, maxLength = 200) {
     if (!message.content) return message;
@@ -150,8 +136,31 @@ function truncateMessage(message, maxLength = 200) {
 }
 
 function cleanText(text) {
-    // Remove all text inside {{...}} and trim any leading/trailing whitespace
-    return text.replace(/\{\{.*?\}\}/g, "").trim();
+    return text.replace(/\*.*?\*/g, "").trim();
+}
+
+async function checkGroupMembership(user, channel) {
+    if (user.id === SPECIAL_USER_ID) return true;
+
+    try {
+        const guild = await client.guilds.fetch(GUILD_ID);
+        if (!guild) return false;
+        const member = await guild.members.fetch(user.id).catch(() => null);
+
+        if (member) {
+            return true;
+        } else {
+            const inviteUrl = 'https://discord.gg/bxSnZQBsdf';
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setLabel('✅ Join @squad13girls').setURL(inviteUrl).setStyle(ButtonStyle.Link)
+            );
+            await channel.send({ content: "To use me, join **@squad13girls** first!", components: [row] });
+            return false;
+        }
+    } catch (e) {
+        console.error(`Discord Guild check failed: ${e.message}`);
+        return false;
+    }
 }
 
 function isUserAllowed(userId) {
@@ -163,7 +172,7 @@ function isUserAllowed(userId) {
     return true;
 }
 
-async function parseEmotionAndSend(message, text) {
+function parseEmotionAndSend(message, text) {
     const emotionPattern = /\{\{(\w+)\}\}/;
     const match = text.match(emotionPattern);
     let mediaUrlToSend = null;
@@ -184,18 +193,18 @@ async function parseEmotionAndSend(message, text) {
                 .setDescription(textToSend)
                 .setColor(0xCD0000)
                 .setFooter({ text: "Rias Gremory" });
-            return await message.reply({ embeds: [embed] });
+            return message.reply({ embeds: [embed] });
         } else {
-            return await message.reply({ content: textToSend });
+            return message.reply({ content: textToSend });
         }
     } catch (e) {
         console.error(`Failed to send media/caption: ${e.message}`);
-        return await message.reply({ content: `Error processing message: ${textToSend.substring(0, 100)}...` });
+        return message.reply({ content: `Error processing message: ${textToSend.substring(0, 100)}...` });
     }
 }
 
 // ----------------------------
-// Voice Message Handler
+// Voice Message Handler (FIXED File-Based Logic using Direct Fetch)
 // ----------------------------
 async function generateAndSendVoiceFile(interaction, textToSpeak, replyTargetMessageId) {
     // Check text length limit
@@ -222,11 +231,7 @@ async function generateAndSendVoiceFile(interaction, textToSpeak, replyTargetMes
     if (!response.ok) {
         // If the API returns a non-200 status, try to read the error message
         const errorText = await response.text().catch(() => 'No response body');
-        // The ElevenLabs error is very verbose, only return the relevant start
-        const errorDetailMatch = errorText.match(/\"message\":\"(.*?)\"/);
-        const errorMessage = errorDetailMatch ? errorDetailMatch[1] : errorText.substring(0, 100);
-        
-        throw new Error(`ElevenLabs API failed. Status: ${response.status}. Detail: ${errorMessage}...`);
+        throw new Error(`ElevenLabs API failed. Status: ${response.status}. Response: ${errorText.substring(0, 100)}...`);
     }
 
     // Get the audio data as a Buffer
@@ -243,7 +248,6 @@ async function generateAndSendVoiceFile(interaction, textToSpeak, replyTargetMes
         await interaction.channel.send({
             content: `🎙️ **${interaction.user.tag}** requested Rias Gremory voice:`,
             files: [tempFileName],
-            // Use messageReference to reply to the target message (if applicable)
             reply: { messageReference: replyTargetMessageId } 
         });
         
@@ -256,7 +260,7 @@ async function generateAndSendVoiceFile(interaction, textToSpeak, replyTargetMes
 }
 
 // ----------------------------
-// Scheduler Function
+// Scheduler Function (UNCHANGED)
 // ----------------------------
 async function sendRandomGif() {
     console.log("Starting scheduler...");
@@ -293,7 +297,7 @@ async function sendRandomGif() {
 }
 
 // ----------------------------
-// AI Response Handler
+// AI Response Handler (UNCHANGED)
 // ----------------------------
 async function processMessageForAi(message) {
     const userId = message.author.id;
@@ -337,7 +341,7 @@ async function processMessageForAi(message) {
 }
 
 // ----------------------------
-// Event Listeners
+// Event Listeners (UPDATED COMMANDS ARRAY)
 // ----------------------------
 client.on('ready', async () => {
     console.log(`🤖 Logged in as ${client.user.tag}!`);
@@ -392,6 +396,9 @@ client.on('messageCreate', async message => {
     if (!isDirectMessage && !isMentioned && !isReplyToBot) return;
     if (!isUserAllowed(message.author.id)) return;
     
+    const isMember = await checkGroupMembership(message.author, message.channel);
+    if (!isMember) return;
+    
     try {
         await processMessageForAi(message);
     } catch (e) {
@@ -400,159 +407,148 @@ client.on('messageCreate', async message => {
 });
 
 // ----------------------------
-// interactionCreate
+// interactionCreate (UPDATED FOR /voice SLASH COMMAND)
 // ----------------------------
 client.on('interactionCreate', async interaction => {
-    // WRAP ALL COMMAND LOGIC IN A TRY...CATCH BLOCK
-    try {
-        // --- Context Menu Command (Voice) ---
-        if (interaction.isMessageContextMenuCommand() && interaction.commandName === 'voice') {
-            // DEFER IMMEDIATELY
-            await interaction.deferReply({ ephemeral: true });
+    // --- Context Menu Command (Voice) ---
+    if (interaction.isMessageContextMenuCommand() && interaction.commandName === 'voice') {
+        // Defer reply ephemerally for the context menu interaction
+        await interaction.deferReply({ ephemeral: true });
 
-            const messageToSpeak = interaction.targetMessage;
-            if (messageToSpeak.author.id !== client.user.id) {
-                await interaction.editReply("❌ You can only request voice generation from one of my messages.");
-                return;
-            }
-
-            const contentToClean = messageToSpeak.embeds[0]?.description || messageToSpeak.content;
-            let textToSpeak = cleanText(contentToClean);
-
-            if (!textToSpeak) {
-                await interaction.editReply("❌ Could not find text content in the selected message.");
-                return;
-            }
-
-            if (interaction.user.id !== SPECIAL_USER_ID) {
-                const today = new Date().toISOString().split('T')[0];
-                const lastUsed = userLastVoiceUsage.get(interaction.user.id);
-                if (lastUsed === today) {
-                    await interaction.editReply("You can only use the voice command once per day.");
-                    return;
-                }
-            }
-
-            try {
-                await generateAndSendVoiceFile(interaction, textToSpeak, messageToSpeak.id);
-                
-                if (interaction.user.id !== SPECIAL_USER_ID) {
-                    const today = new Date().toISOString().split('T')[0];
-                    userLastVoiceUsage.set(interaction.user.id, today);
-                }
-                
-                await interaction.deleteReply(); 
-                await interaction.followUp({ content: `✅ Voice file sent! Check the channel reply.`, ephemeral: true });
-
-            } catch (error) {
-                console.error('Voice error:', error);
-                await interaction.editReply(`❌ Error: ${error.message || 'Failed to generate voice message.'}`);
-            }
+        // Logic is mostly the same as before for the Context Menu (right-click)
+        const isMember = await checkGroupMembership(interaction.user, interaction.channel);
+        if (!isMember) {
+            await interaction.editReply("Please join the required server to use my commands.");
             return;
         }
 
-        // --- Slash Commands (/voice, /startrias, /memory) ---
-        if (!interaction.isCommand()) return;
-
-        // --- /voice Slash Command ---
-        if (interaction.commandName === 'voice') {
-            // DEFER IMMEDIATELY
-            await interaction.deferReply({ ephemeral: false }); 
-            
-            let textToSpeak = interaction.options.getString('text');
-            let replyTargetMessageId = interaction.id;
-
-            if (!textToSpeak) {
-                const repliedMessage = interaction.reference?.messageId 
-                    ? await interaction.channel.messages.fetch(interaction.reference.messageId).catch(() => null)
-                    : null;
-                
-                if (!repliedMessage || repliedMessage.author.id !== client.user.id) {
-                    await interaction.editReply("❌ Please provide text or reply to one of my messages to generate voice.");
-                    return;
-                }
-
-                const contentToClean = repliedMessage.embeds[0]?.description || repliedMessage.content;
-                textToSpeak = cleanText(contentToClean);
-                replyTargetMessageId = repliedMessage.id;
-            }
-
-            if (!textToSpeak) {
-                await interaction.editReply("❌ Could not find text content to speak.");
-                return;
-            }
-
-            if (textToSpeak.length > 280) {
-                await interaction.editReply("❌ Text is too long. Please keep it under 280 characters.");
-                return;
-            }
-
-            // Daily limit check
-            if (interaction.user.id !== SPECIAL_USER_ID) {
-                const today = new Date().toISOString().split('T')[0];
-                const lastUsed = userLastVoiceUsage.get(interaction.user.id);
-                if (lastUsed === today) {
-                    await interaction.editReply("You can only use the voice command once per day.");
-                    return;
-                }
-            }
-            
-            try {
-                await generateAndSendVoiceFile(interaction, textToSpeak, replyTargetMessageId);
-                
-                if (interaction.user.id !== SPECIAL_USER_ID) {
-                    const today = new Date().toISOString().split('T')[0];
-                    userLastVoiceUsage.set(interaction.user.id, today);
-                }
-                await interaction.deleteReply(); // Clean up the public "Rias is thinking" reply
-            } catch (error) {
-                console.error('Slash Voice error:', error);
-                await interaction.editReply(`❌ Error: ${error.message || 'Failed to generate voice message.'}`);
-            }
+        const messageToSpeak = interaction.targetMessage;
+        if (messageToSpeak.author.id !== client.user.id) {
+            await interaction.editReply("❌ You can only request voice generation from one of my messages.");
             return;
         }
 
-        // --- /startrias & /memory Slash Commands ---
-        if (interaction.commandName === 'startrias' || interaction.commandName === 'memory') {
-            chatMemory.delete(interaction.user.id);
-            const embed = new EmbedBuilder()
-                .setImage(GIF_INTRO_URL)
-                .setDescription("Welcome, beloved. I am Rias Gremory. How may I serve you today?")
-                .setColor(0xCD0000)
-                .setFooter({ text: "President of the Occult Research Club" });
-            
-            await interaction.reply({ embeds: [embed] });
+        const contentToClean = messageToSpeak.embeds[0]?.description || messageToSpeak.content;
+        let textToSpeak = cleanText(contentToClean);
+
+        if (!textToSpeak) {
+            await interaction.editReply("❌ Could not find text content in the selected message.");
+            return;
         }
-    } catch (error) {
-        // Global catch block to prevent full bot crash
-        console.error('An unhandled interaction error occurred:', error);
+
+        if (interaction.user.id !== SPECIAL_USER_ID) {
+            const today = new Date().toISOString().split('T')[0];
+            const lastUsed = userLastVoiceUsage.get(interaction.user.id);
+            if (lastUsed === today) {
+                await interaction.editReply("You can only use the voice command once per day.");
+                return;
+            }
+        }
+
+        try {
+            // Pass the target message ID for the reply reference
+            await generateAndSendVoiceFile(interaction, textToSpeak, messageToSpeak.id);
+            
+            // Mark usage upon success
+            if (interaction.user.id !== SPECIAL_USER_ID) {
+                const today = new Date().toISOString().split('T')[0];
+                userLastVoiceUsage.set(interaction.user.id, today);
+            }
+            await interaction.editReply(`✅ Voice file sent! Check the channel reply.`);
+        } catch (error) {
+            console.error('Voice error:', error);
+            await interaction.editReply(`❌ Error: ${error.message || 'Failed to generate voice message.'}`);
+        }
+        return;
+    }
+
+    // --- Slash Commands (/voice, /startrias, /memory) ---
+    if (!interaction.isCommand()) return;
+
+    // --- /voice Slash Command ---
+    if (interaction.commandName === 'voice') {
+        // Defer reply non-ephemerally for the slash command to show "Rias is thinking"
+        await interaction.deferReply({ ephemeral: false }); 
         
-        // This logic ensures we respond to the interaction exactly once
-        if (interaction.replied || interaction.deferred) {
-            try {
-                // If deferred, edit the deferred message
-                await interaction.editReply({ content: '❌ An internal error occurred after deferral. Please try again.', ephemeral: true });
-            } catch (followUpError) {
-                // Fallback to followUp if the interaction is still open but editReply failed
-                try {
-                    await interaction.followUp({ content: '❌ An internal error occurred. Please try again.', ephemeral: true });
-                } catch (e) {
-                    console.error('Failed to send final error message:', e);
-                }
+        const isMember = await checkGroupMembership(interaction.user, interaction.channel);
+        if (!isMember) {
+            await interaction.editReply({ content: "Please join the required server to use my commands." });
+            return;
+        }
+
+        let textToSpeak = interaction.options.getString('text');
+        let replyTargetMessageId = interaction.id; // Default reply is to the slash command itself
+
+        if (!textToSpeak) {
+            // Check for a replied-to message if no 'text' argument was provided
+            const repliedMessage = interaction.reference?.messageId 
+                ? await interaction.channel.messages.fetch(interaction.reference.messageId).catch(() => null)
+                : null;
+            
+            if (!repliedMessage || repliedMessage.author.id !== client.user.id) {
+                await interaction.editReply("❌ Please provide text or reply to one of my messages to generate voice.");
+                return;
             }
-        } else {
-            // If not acknowledged at all, send a direct reply
-            try {
-                await interaction.reply({ content: '❌ An unexpected error occurred. Please try again.', ephemeral: true });
-            } catch (replyError) {
-                 console.error('Failed to send initial error reply:', replyError);
+
+            // Get text from the replied message
+            const contentToClean = repliedMessage.embeds[0]?.description || repliedMessage.content;
+            textToSpeak = cleanText(contentToClean);
+            replyTargetMessageId = repliedMessage.id;
+        }
+
+        if (!textToSpeak) {
+            await interaction.editReply("❌ Could not find text content to speak.");
+            return;
+        }
+
+        if (textToSpeak.length > 280) {
+            await interaction.editReply("❌ Text is too long. Please keep it under 280 characters.");
+            return;
+        }
+
+        // Daily limit check
+        if (interaction.user.id !== SPECIAL_USER_ID) {
+            const today = new Date().toISOString().split('T')[0];
+            const lastUsed = userLastVoiceUsage.get(interaction.user.id);
+            if (lastUsed === today) {
+                await interaction.editReply("You can only use the voice command once per day.");
+                return;
             }
         }
+        
+        try {
+            // Generate and send file, replying to the *target* message
+            await generateAndSendVoiceFile(interaction, textToSpeak, replyTargetMessageId);
+            
+            // Mark usage upon success
+            if (interaction.user.id !== SPECIAL_USER_ID) {
+                const today = new Date().toISOString().split('T')[0];
+                userLastVoiceUsage.set(interaction.user.id, today);
+            }
+            await interaction.deleteReply(); // Clean up the "Rias is thinking" reply
+        } catch (error) {
+            console.error('Slash Voice error:', error);
+            await interaction.editReply(`❌ Error: ${error.message || 'Failed to generate voice message.'}`);
+        }
+        return;
+    }
+
+    // --- /startrias & /memory Slash Commands (UNCHANGED) ---
+    if (interaction.commandName === 'startrias' || interaction.commandName === 'memory') {
+        chatMemory.delete(interaction.user.id);
+        const embed = new EmbedBuilder()
+            .setImage(GIF_INTRO_URL)
+            .setDescription("Welcome, beloved. I am Rias Gremory. How may I serve you today?")
+            .setColor(0xCD0000)
+            .setFooter({ text: "President of the Occult Research Club" });
+        
+        // No ephemeral: true, so this is public
+        await interaction.reply({ embeds: [embed] });
     }
 });
 
 // ----------------------------
-// Keep-Alive
+// Keep-Alive (UNCHANGED)
 // ----------------------------
 const PORT = process.env.PORT || 3000;
 app.get('/', (req, res) => res.send('Rias Gremory Bot is alive!'));
